@@ -11,20 +11,16 @@ const TOKEN = process.env.BOT_TOKEN;
 
 if (!TOKEN) {
   console.error("❌ BOT_TOKEN bulunamadı!");
-  console.error("👉 .env dosyanı kontrol et.");
   process.exit(1);
 }
 
 const API = `https://api.telegram.org/bot${TOKEN}`;
 
-// Railway'de /data kullan.
-// Mac'te proje klasöründeki users.db kullan.
 const dbPath =
   process.env.DB_PATH ||
   (fs.existsSync("/data") ? "/data/users.db" : "./users.db");
 
 const db = new Database(dbPath);
-
 db.pragma("journal_mode = WAL");
 
 // ======================================================
@@ -34,6 +30,7 @@ db.pragma("journal_mode = WAL");
 db.prepare(`
   CREATE TABLE IF NOT EXISTS users (
     telegram_id INTEGER PRIMARY KEY,
+    username TEXT,
     isim TEXT,
     yas INTEGER,
     cinsiyet TEXT,
@@ -54,7 +51,12 @@ db.prepare(`
   )
 `).run();
 
-// Profil oluşturma aşamaları
+// Eski veritabanında username sütunu yoksa ekle
+try {
+  db.prepare(`ALTER TABLE users ADD COLUMN username TEXT`).run();
+} catch (_) {}
+
+// Geçici profil oturumları
 const sessions = new Map();
 
 // ======================================================
@@ -81,10 +83,6 @@ async function telegram(method, body = {}) {
   return result.result;
 }
 
-// ======================================================
-// MESAJ GÖNDER
-// ======================================================
-
 async function sendMessage(chatId, text, extra = {}) {
   return telegram("sendMessage", {
     chat_id: chatId,
@@ -92,10 +90,6 @@ async function sendMessage(chatId, text, extra = {}) {
     ...extra,
   });
 }
-
-// ======================================================
-// FOTOĞRAF GÖNDER
-// ======================================================
 
 async function sendPhoto(chatId, photo, caption = "", extra = {}) {
   return telegram("sendPhoto", {
@@ -106,22 +100,16 @@ async function sendPhoto(chatId, photo, caption = "", extra = {}) {
   });
 }
 
-// ======================================================
-// CALLBACK CEVAPLA
-// ======================================================
-
 async function answerCallbackQuery(id) {
   try {
     await telegram("answerCallbackQuery", {
       callback_query_id: id,
     });
-  } catch (error) {
-    console.log("Callback cevap hatası:", error.message);
-  }
+  } catch (_) {}
 }
 
 // ======================================================
-// ANA MENÜ
+// MENÜ
 // ======================================================
 
 function anaMenu() {
@@ -134,14 +122,12 @@ function anaMenu() {
             callback_data: "profil_olustur",
           },
         ],
-
         [
           {
             text: "🔍 Profilleri Keşfet",
             callback_data: "profilleri_kesfet",
           },
         ],
-
         [
           {
             text: "🪪 Profilimi Gör",
@@ -181,7 +167,6 @@ async function profilGoster(chatId, profil) {
     chatId,
     profil.foto,
     profilYazisi(profil),
-
     {
       reply_markup: {
         inline_keyboard: [
@@ -190,7 +175,6 @@ async function profilGoster(chatId, profil) {
               text: "❤️ Beğen",
               callback_data: `begen_${profil.telegram_id}`,
             },
-
             {
               text: "❌ Geç",
               callback_data: `gec_${profil.telegram_id}`,
@@ -232,45 +216,95 @@ function rastgeleProfil(userId, haricId = null) {
 }
 
 // ======================================================
+// USERNAME GÜNCELLE
+// ======================================================
+
+function usernameGuncelle(userId, username) {
+  try {
+    db.prepare(`
+      UPDATE users
+      SET username = ?
+      WHERE telegram_id = ?
+    `).run(username || null, userId);
+  } catch (_) {}
+}
+
+// ======================================================
 // /START
 // ======================================================
 
 async function startKomutu(message) {
   const chatId = message.chat.id;
+  const userId = message.from?.id;
+  const username = message.from?.username || null;
+
+  if (userId) {
+    usernameGuncelle(userId, username);
+  }
 
   await sendMessage(
     chatId,
-
     "👋 Bursa Tanışma'ya hoş geldin!\n\n" +
       "Yeni insanlarla tanış, profilleri keşfet ve eşleş.\n\n" +
       "🔞 Yalnızca 18 yaş ve üzeri kullanıcılar içindir.",
-
     anaMenu()
   );
 }
 
 // ======================================================
-// CALLBACK BUTONLARI
+// EŞLEŞME MESAJI
+// ======================================================
+
+async function eslesmeMesaji(chatId, digerProfil) {
+  const text =
+    `🎉 EŞLEŞTİNİZ!\n\n` +
+    `❤️ ${digerProfil.isim} de seni beğenmiş!`;
+
+  if (digerProfil.username) {
+    await sendMessage(chatId, text, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "💬 Telegram’dan Yaz",
+              url: `https://t.me/${digerProfil.username}`,
+            },
+          ],
+        ],
+      },
+    });
+
+    return;
+  }
+
+  await sendMessage(
+    chatId,
+    text +
+      "\n\n⚠️ Bu kullanıcının Telegram kullanıcı adı olmadığı için doğrudan mesaj butonu gösterilemiyor."
+  );
+}
+
+// ======================================================
+// CALLBACK
 // ======================================================
 
 async function callbackIsle(query) {
   const data = query.data;
   const userId = query.from.id;
   const chatId = query.message?.chat?.id;
+  const username = query.from?.username || null;
 
   await answerCallbackQuery(query.id);
 
-  if (!data || !chatId) {
-    return;
-  }
+  if (!data || !chatId) return;
 
-  // ====================================================
+  usernameGuncelle(userId, username);
+
   // PROFİL OLUŞTUR
-  // ====================================================
-
   if (data === "profil_olustur") {
     sessions.set(userId, {
       step: "isim",
+      username,
     });
 
     await sendMessage(
@@ -281,10 +315,7 @@ async function callbackIsle(query) {
     return;
   }
 
-  // ====================================================
-  // PROFİLLERİ KEŞFET
-  // ====================================================
-
+  // KEŞFET
   if (data === "profilleri_kesfet") {
     const kendiProfilin = db
       .prepare(`
@@ -297,9 +328,7 @@ async function callbackIsle(query) {
     if (!kendiProfilin) {
       await sendMessage(
         chatId,
-
         "⚠️ Profilleri keşfetmeden önce kendi profilini oluşturmalısın.",
-
         anaMenu()
       );
 
@@ -313,19 +342,14 @@ async function callbackIsle(query) {
         chatId,
         "🔍 Şimdilik gösterebileceğim başka profil yok."
       );
-
       return;
     }
 
     await profilGoster(chatId, profil);
-
     return;
   }
 
-  // ====================================================
-  // PROFİLİMİ GÖR
-  // ====================================================
-
+  // PROFİLİM
   if (data === "profilimi_gor") {
     const profil = db
       .prepare(`
@@ -338,13 +362,9 @@ async function callbackIsle(query) {
     if (!profil) {
       await sendMessage(
         chatId,
-
-        "⚠️ Henüz kayıtlı bir profilin yok.\n\n" +
-          "Önce Profil Oluştur butonuna bas.",
-
+        "⚠️ Henüz kayıtlı bir profilin yok.",
         anaMenu()
       );
-
       return;
     }
 
@@ -352,7 +372,6 @@ async function callbackIsle(query) {
       chatId,
       profil.foto,
       profilYazisi(profil, "🪪 PROFİLİN"),
-
       {
         reply_markup: {
           inline_keyboard: [
@@ -362,7 +381,6 @@ async function callbackIsle(query) {
                 callback_data: "profil_olustur",
               },
             ],
-
             [
               {
                 text: "🔍 Profilleri Keşfet",
@@ -377,23 +395,21 @@ async function callbackIsle(query) {
     return;
   }
 
-  // ====================================================
-  // CİNSİYET KADIN
-  // ====================================================
-
-  if (data === "cinsiyet_kadin") {
+  // CİNSİYET
+  if (data === "cinsiyet_kadin" || data === "cinsiyet_erkek") {
     const session = sessions.get(userId);
 
     if (!session) {
       await sendMessage(
         chatId,
-        "⚠️ Profil oluşturma işlemi bulunamadı.\n/start yaz."
+        "⚠️ Profil oluşturma işlemi bulunamadı. /start yaz."
       );
-
       return;
     }
 
-    session.cinsiyet = "Kadın";
+    session.cinsiyet =
+      data === "cinsiyet_kadin" ? "Kadın" : "Erkek";
+
     session.step = "sehir";
 
     await sendMessage(
@@ -404,37 +420,7 @@ async function callbackIsle(query) {
     return;
   }
 
-  // ====================================================
-  // CİNSİYET ERKEK
-  // ====================================================
-
-  if (data === "cinsiyet_erkek") {
-    const session = sessions.get(userId);
-
-    if (!session) {
-      await sendMessage(
-        chatId,
-        "⚠️ Profil oluşturma işlemi bulunamadı.\n/start yaz."
-      );
-
-      return;
-    }
-
-    session.cinsiyet = "Erkek";
-    session.step = "sehir";
-
-    await sendMessage(
-      chatId,
-      "📍 Hangi şehirde yaşıyorsun?\n\nÖrnek: Bursa"
-    );
-
-    return;
-  }
-
-  // ====================================================
   // PROFİL KAYDET
-  // ====================================================
-
   if (data === "profili_kaydet") {
     const session = sessions.get(userId);
 
@@ -443,13 +429,13 @@ async function callbackIsle(query) {
         chatId,
         "⚠️ Kaydedilecek profil bulunamadı."
       );
-
       return;
     }
 
     db.prepare(`
       INSERT INTO users (
         telegram_id,
+        username,
         isim,
         yas,
         cinsiyet,
@@ -457,12 +443,11 @@ async function callbackIsle(query) {
         foto,
         aciklama
       )
-
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 
       ON CONFLICT(telegram_id)
-
       DO UPDATE SET
+        username = excluded.username,
         isim = excluded.isim,
         yas = excluded.yas,
         cinsiyet = excluded.cinsiyet,
@@ -471,6 +456,7 @@ async function callbackIsle(query) {
         aciklama = excluded.aciklama
     `).run(
       userId,
+      session.username || username || null,
       session.isim,
       session.yas,
       session.cinsiyet,
@@ -483,30 +469,18 @@ async function callbackIsle(query) {
 
     await sendMessage(
       chatId,
-
-      "🎉 Profilin başarıyla kaydedildi!\n\n" +
-        "Artık profilleri keşfedebilirsin.",
-
+      "🎉 Profilin başarıyla kaydedildi!\n\nArtık profilleri keşfedebilirsin.",
       anaMenu()
     );
 
     return;
   }
 
-  // ====================================================
   // ❤️ BEĞEN
-  // ====================================================
-
   if (data.startsWith("begen_")) {
-    const likedId = Number(
-      data.replace("begen_", "")
-    );
+    const likedId = Number(data.replace("begen_", ""));
 
-    if (!Number.isSafeInteger(likedId)) {
-      return;
-    }
-
-    if (likedId === userId) {
+    if (!Number.isSafeInteger(likedId) || likedId === userId) {
       return;
     }
 
@@ -526,21 +500,11 @@ async function callbackIsle(query) {
       `)
       .get(likedId);
 
-    if (!benimProfilim) {
+    if (!benimProfilim || !digerProfil) {
       await sendMessage(
         chatId,
-        "⚠️ Önce kendi profilini oluşturmalısın."
+        "⚠️ Profil bulunamadı."
       );
-
-      return;
-    }
-
-    if (!digerProfil) {
-      await sendMessage(
-        chatId,
-        "⚠️ Bu profil artık bulunamıyor."
-      );
-
       return;
     }
 
@@ -549,7 +513,6 @@ async function callbackIsle(query) {
         liker_id,
         liked_id
       )
-
       VALUES (?, ?)
     `).run(userId, likedId);
 
@@ -562,28 +525,20 @@ async function callbackIsle(query) {
       `)
       .get(likedId, userId);
 
-    // ==================================================
-    // EŞLEŞME
-    // ==================================================
-
     if (eslesme) {
-      await sendMessage(
+      await eslesmeMesaji(
         chatId,
-
-        "🎉 EŞLEŞTİNİZ!\n\n" +
-          `❤️ ${digerProfil.isim} de seni beğenmiş!`
+        digerProfil
       );
 
       try {
-        await sendMessage(
+        await eslesmeMesaji(
           likedId,
-
-          "🎉 EŞLEŞTİNİZ!\n\n" +
-            `❤️ ${benimProfilim.isim} de seni beğenmiş!`
+          benimProfilim
         );
       } catch (error) {
         console.log(
-          "Eşleşme mesajı karşı tarafa gönderilemedi:",
+          "Karşı tarafa eşleşme mesajı gönderilemedi:",
           error.message
         );
       }
@@ -594,28 +549,23 @@ async function callbackIsle(query) {
       );
     }
 
-    // Sonraki profil
-    const sonrakiProfil =
+    const sonraki =
       rastgeleProfil(userId, likedId);
 
-    if (sonrakiProfil) {
+    if (sonraki) {
       await profilGoster(
         chatId,
-        sonrakiProfil
+        sonraki
       );
     }
 
     return;
   }
 
-  // ====================================================
   // ❌ GEÇ
-  // ====================================================
-
   if (data.startsWith("gec_")) {
-    const skippedId = Number(
-      data.replace("gec_", "")
-    );
+    const skippedId =
+      Number(data.replace("gec_", ""));
 
     const profil =
       rastgeleProfil(userId, skippedId);
@@ -625,7 +575,6 @@ async function callbackIsle(query) {
         chatId,
         "🔍 Şimdilik gösterebileceğim başka profil yok."
       );
-
       return;
     }
 
@@ -639,18 +588,18 @@ async function callbackIsle(query) {
 }
 
 // ======================================================
-// PROFİL OLUŞTURMA MESAJLARI
+// MESAJLAR
 // ======================================================
 
 async function mesajIsle(msg) {
   const chatId = msg.chat.id;
   const userId = msg.from?.id;
+  const username = msg.from?.username || null;
 
-  if (!userId) {
-    return;
-  }
+  if (!userId) return;
 
-  // /start
+  usernameGuncelle(userId, username);
+
   if (
     msg.text === "/start" ||
     msg.text?.startsWith("/start@")
@@ -659,7 +608,6 @@ async function mesajIsle(msg) {
     return;
   }
 
-  // Diğer komutları geç
   if (msg.text?.startsWith("/")) {
     return;
   }
@@ -671,17 +619,15 @@ async function mesajIsle(msg) {
     return;
   }
 
-  // ====================================================
-  // İSİM
-  // ====================================================
+  session.username = username;
 
+  // İSİM
   if (session.step === "isim") {
     if (!msg.text?.trim()) {
       await sendMessage(
         chatId,
         "⚠️ Lütfen adını yaz."
       );
-
       return;
     }
 
@@ -694,14 +640,10 @@ async function mesajIsle(msg) {
       chatId,
       "🎂 Yaşını yaz:\n\nÖrnek: 25"
     );
-
     return;
   }
 
-  // ====================================================
   // YAŞ
-  // ====================================================
-
   if (session.step === "yas") {
     const yas =
       Number(msg.text?.trim());
@@ -715,7 +657,6 @@ async function mesajIsle(msg) {
         chatId,
         "⚠️ Lütfen 18 ile 99 arasında geçerli bir yaş yaz."
       );
-
       return;
     }
 
@@ -725,7 +666,6 @@ async function mesajIsle(msg) {
     await sendMessage(
       chatId,
       "⚧ Cinsiyetini seç:",
-
       {
         reply_markup: {
           inline_keyboard: [
@@ -734,7 +674,6 @@ async function mesajIsle(msg) {
                 text: "👩 Kadın",
                 callback_data: "cinsiyet_kadin",
               },
-
               {
                 text: "👨 Erkek",
                 callback_data: "cinsiyet_erkek",
@@ -748,30 +687,13 @@ async function mesajIsle(msg) {
     return;
   }
 
-  // ====================================================
-  // CİNSİYET
-  // ====================================================
-
-  if (session.step === "cinsiyet") {
-    await sendMessage(
-      chatId,
-      "⚠️ Lütfen Kadın veya Erkek butonuna bas."
-    );
-
-    return;
-  }
-
-  // ====================================================
   // ŞEHİR
-  // ====================================================
-
   if (session.step === "sehir") {
     if (!msg.text?.trim()) {
       await sendMessage(
         chatId,
         "⚠️ Lütfen şehir adını yaz."
       );
-
       return;
     }
 
@@ -784,76 +706,53 @@ async function mesajIsle(msg) {
       chatId,
       "📸 Şimdi profil fotoğrafını gönder."
     );
-
     return;
   }
 
-  // ====================================================
-  // FOTOĞRAF
-  // ====================================================
-
+  // FOTO
   if (session.step === "foto") {
-    if (
-      !msg.photo ||
-      msg.photo.length === 0
-    ) {
+    if (!msg.photo?.length) {
       await sendMessage(
         chatId,
         "⚠️ Lütfen fotoğraf olarak gönder."
       );
-
       return;
     }
 
-    const fotograf =
-      msg.photo[
-        msg.photo.length - 1
-      ];
-
     session.foto =
-      fotograf.file_id;
+      msg.photo[msg.photo.length - 1].file_id;
 
-    session.step =
-      "aciklama";
+    session.step = "aciklama";
 
     await sendMessage(
       chatId,
       "✍️ Son olarak kendinden kısaca bahset."
     );
-
     return;
   }
 
-  // ====================================================
   // AÇIKLAMA
-  // ====================================================
-
   if (session.step === "aciklama") {
     if (!msg.text?.trim()) {
       await sendMessage(
         chatId,
         "⚠️ Lütfen açıklamanı yaz."
       );
-
       return;
     }
 
     session.aciklama =
       msg.text.trim().slice(0, 500);
 
-    session.step =
-      "tamamlandi";
+    session.step = "tamamlandi";
 
     await sendPhoto(
       chatId,
-
       session.foto,
-
       profilYazisi(
         session,
         "✅ PROFİL ÖNİZLEME"
       ),
-
       {
         reply_markup: {
           inline_keyboard: [
@@ -863,7 +762,6 @@ async function mesajIsle(msg) {
                 callback_data: "profili_kaydet",
               },
             ],
-
             [
               {
                 text: "🔄 Baştan Oluştur",
@@ -880,7 +778,7 @@ async function mesajIsle(msg) {
 }
 
 // ======================================================
-// UPDATE İŞLE
+// UPDATE
 // ======================================================
 
 async function updateIsle(update) {
@@ -889,7 +787,6 @@ async function updateIsle(update) {
       await callbackIsle(
         update.callback_query
       );
-
       return;
     }
 
@@ -897,8 +794,6 @@ async function updateIsle(update) {
       await mesajIsle(
         update.message
       );
-
-      return;
     }
   } catch (error) {
     console.error(
@@ -909,7 +804,7 @@ async function updateIsle(update) {
 }
 
 // ======================================================
-// LONG POLLING
+// POLLING
 // ======================================================
 
 let offset = 0;
@@ -951,7 +846,7 @@ async function polling() {
 }
 
 // ======================================================
-// BOT BİLGİSİ TESTİ
+// BAŞLAT
 // ======================================================
 
 async function baslat() {
@@ -972,17 +867,12 @@ async function baslat() {
     console.error("");
     console.error("❌ BOT BAŞLATILAMADI");
     console.error(error.message);
-    console.error("");
-    console.error(
-      "👉 BOT_TOKEN değerini kontrol et."
-    );
-
     process.exit(1);
   }
 }
 
 // ======================================================
-// KAPANIŞ
+// KAPAT
 // ======================================================
 
 process.on("SIGINT", () => {
@@ -1006,9 +896,5 @@ process.on("SIGTERM", () => {
 
   process.exit(0);
 });
-
-// ======================================================
-// ÇALIŞTIR
-// ======================================================
 
 baslat();
