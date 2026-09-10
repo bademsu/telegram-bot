@@ -95,7 +95,7 @@ bot.on("callback_query", async (ctx) => {
 
     const profil = profiller[0];
 
-    await ctx.api.sendPhoto({
+  await ctx.api.sendPhoto({  
       chat_id: ctx.chat.id,
       photo: profil.foto,
       caption:
