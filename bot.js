@@ -95,15 +95,29 @@ bot.on("callback_query", async (ctx) => {
 
     const profil = profiller[0];
 
-  await ctx.api.sendPhoto({  
-      chat_id: ctx.chat.id,
-      photo: profil.foto,
-      caption:
-        `👤 ${profil.isim}, ${profil.yas}\n` +
-        `⚧ ${profil.cinsiyet}\n` +
-        `📍 ${profil.sehir}\n\n` +
-        `${profil.aciklama}`
-    });
+  await ctx.api.sendPhoto({
+  chat_id: ctx.chat.id,
+  photo: profil.foto,
+  caption:
+    `👤 ${profil.isim}, ${profil.yas}\n` +
+    `⚥ ${profil.cinsiyet}\n` +
+    `📍 ${profil.sehir}\n\n` +
+    `${profil.aciklama}`,
+  reply_markup: {
+    inline_keyboard: [
+      [
+        {
+          text: "❤️ Beğen",
+          callback_data: `begen_${profil.telegram_id}`
+        },
+        {
+          text: "❌ Geç",
+          callback_data: `gec_${profil.telegram_id}`
+        }
+      ]
+    ]
+  }
+});
 
     return;
   }
@@ -343,6 +357,22 @@ bot.on("message", async (ctx) => {
     return;
   }
 });
+
+
+// GEÇİCİ TEST PROFİLİ
+db.prepare(`
+  INSERT OR IGNORE INTO users
+  (telegram_id, isim, yas, cinsiyet, sehir, foto, aciklama)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`).run(
+  999999999,
+  "Test Kullanıcı",
+  25,
+  "Kadın",
+  "Bursa",
+  "https://picsum.photos/500/700",
+  "Bu geçici bir test profilidir."
+);
 
 console.log("Bot aktif ✅");
 console.log("Veritabanı hazır ✅");
