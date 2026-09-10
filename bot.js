@@ -20,6 +20,15 @@ db.prepare(`
     aciklama TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
+`).run();// Beğeniler tablosu
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS likes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    liker_id INTEGER NOT NULL,
+    liked_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(liker_id, liked_id)
+  )
 `).run();
 
 // Profil oluştururken geçici adımlar burada tutulacak
@@ -118,6 +127,68 @@ bot.on("callback_query", async (ctx) => {
     ]
   }
 });
+
+    return;
+  }
+
+  // ❤️ BEĞEN
+  if (data.startsWith("begen_")) {
+    const likedId = Number(data.replace("begen_", ""));
+
+    if (!likedId || likedId === userId) return;
+
+    db.prepare(`
+      INSERT OR IGNORE INTO likes (liker_id, liked_id)
+      VALUES (?, ?)
+    `).run(userId, likedId);
+
+    await ctx.reply("❤️ Profil beğenildi!");
+    return;
+  }
+
+  // ❌ GEÇ
+  if (data.startsWith("gec_")) {
+    const skippedId = Number(data.replace("gec_", ""));
+
+    const profiller = db.prepare(`
+      SELECT *
+      FROM users
+      WHERE telegram_id != ?
+        AND telegram_id != ?
+      ORDER BY RANDOM()
+      LIMIT 1
+    `).all(userId, skippedId);
+
+    if (profiller.length === 0) {
+      await ctx.reply("🔍 Şimdilik gösterebileceğim başka profil yok.");
+      return;
+    }
+
+    const profil = profiller[0];
+
+    await ctx.api.sendPhoto({
+      chat_id: ctx.chat.id,
+      photo: profil.foto,
+      caption:
+        `👤 ${profil.isim}, ${profil.yas}\n` +
+        `⚧ ${profil.cinsiyet}\n` +
+        `📍 ${profil.sehir}\n\n` +
+        `${profil.aciklama}`,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "❤️ Beğen",
+              callback_data: `begen_${profil.telegram_id}`
+            },
+            {
+              text: "❌ Geç",
+              callback_data: `gec_${profil.telegram_id}`
+            }
+          ]
+        ]
+      }
+    });
 
     return;
   }
