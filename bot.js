@@ -6,7 +6,7 @@ const Database = require("better-sqlite3");
 const bot = new Bot(process.env.BOT_TOKEN);
 
 // SQLite veritabanı
-const db = new Database("users.db");
+const db = new Database("/data/users.db");
 
 // Tabloyu oluştur
 db.prepare(`
